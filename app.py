@@ -1,8 +1,14 @@
-import gradio as gr
+# import gradio as gr
+# import torch
+# import json
+# from PIL import Image
+# from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
 import torch
-import json
-from PIL import Image
+import gradio as gr
 from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
+from PIL import Image
+import json
+
 
 MODEL_ID = "Qwen/Qwen2-VL-2B-Instruct"
 
