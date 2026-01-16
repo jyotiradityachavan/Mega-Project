@@ -1,12 +1,11 @@
 ---
-title: Document Ai Qwen Vl
+title: Document AI – Qwen2-VL
 emoji: 👀
 colorFrom: gray
 colorTo: gray
-sdk: docker
+sdk: gradio
 pinned: false
 license: apache-2.0
-short_description: Multimodal Document AI for extracting structured data from i
+short_description: Multimodal document AI for extracting data from images
 ---
 
-Check out the configuration reference at https://huggingface.co/docs/hub/spaces-config-reference
