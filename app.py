@@ -10,6 +10,7 @@ from PIL import Image
 import json
 
 
+
 MODEL_ID = "Qwen/Qwen2-VL-2B-Instruct"
 
 print("Loading Qwen2-VL processor...")
