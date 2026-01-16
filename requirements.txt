@@ -1,6 +1,6 @@
 transformers==4.47.1
 huggingface-hub==0.24.7
 accelerate==0.26.1
-gradio==4.44.0
+gradio==4.44.1
+numpy<2
 pillow
-numpy
