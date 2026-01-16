@@ -1,13 +1,15 @@
 import gradio as gr
 import torch
-from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
-from PIL import Image
 import json
+from PIL import Image
+from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
 
 MODEL_ID = "Qwen/Qwen2-VL-2B-Instruct"
 
-print("Loading model...")
+print("Loading Qwen2-VL processor...")
 processor = AutoProcessor.from_pretrained(MODEL_ID)
+
+print("Loading Qwen2-VL model...")
 model = Qwen2VLForConditionalGeneration.from_pretrained(
     MODEL_ID,
     torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
@@ -20,25 +22,28 @@ print("Model loaded successfully!")
 # =========================
 
 BILL_PROMPT = """
-Extract all key-value pairs from this BILL.
+You are a document AI system.
+Extract ALL key-value pairs from this BILL.
 Return ONLY valid JSON.
 """
 
 INVOICE_PROMPT = """
-Extract all key-value pairs from this INVOICE.
+You are a document AI system.
+Extract ALL key-value pairs from this INVOICE.
 Return ONLY valid JSON.
 """
 
 INSURANCE_PROMPT = """
-Extract all key-value pairs from this INSURANCE document.
+You are a document AI system.
+Extract ALL key-value pairs from this INSURANCE document.
 Return ONLY valid JSON.
 """
 
 # =========================
-# INFERENCE
+# CORE INFERENCE
 # =========================
 
-def vision_infer(image, prompt):
+def vision_infer(image: Image.Image, prompt: str):
     messages = [
         {
             "role": "user",
@@ -51,24 +56,43 @@ def vision_infer(image, prompt):
 
     inputs = processor.apply_chat_template(
         messages,
+        tokenize=True,
         add_generation_prompt=True,
         return_tensors="pt"
     ).to(model.device)
 
     outputs = model.generate(
-        **inputs,
+        inputs,
         max_new_tokens=1024,
         temperature=0.0
     )
 
-    result = processor.batch_decode(outputs, skip_special_tokens=True)[0]
-    return result
+    result = processor.decode(outputs[0], skip_special_tokens=True)
+    return result.strip()
+
+def chat_infer(text):
+    messages = [{"role": "user", "content": text}]
+
+    inputs = processor.apply_chat_template(
+        messages,
+        tokenize=True,
+        add_generation_prompt=True,
+        return_tensors="pt"
+    ).to(model.device)
+
+    outputs = model.generate(
+        inputs,
+        max_new_tokens=512,
+        temperature=0.2
+    )
+
+    return processor.decode(outputs[0], skip_special_tokens=True)
 
 # =========================
-# API HANDLER
+# API ROUTER
 # =========================
 
-def run(endpoint, image, custom_prompt, chat_text):
+def run_api(endpoint, image, custom_prompt, chat_text):
     try:
         if endpoint in ["bill", "invoice", "insurance"]:
             if image is None:
@@ -81,19 +105,21 @@ def run(endpoint, image, custom_prompt, chat_text):
             }[endpoint]
 
             result = vision_infer(image, prompt)
-            return json.dumps({"type": endpoint, "data": result}, indent=2)
+            return json.dumps({"document": endpoint, "data": result}, indent=2)
 
         elif endpoint == "custom":
             if image is None or not custom_prompt:
-                return "❌ Image + Prompt required"
+                return "❌ Image + custom prompt required"
+
             result = vision_infer(image, custom_prompt)
             return json.dumps({"type": "custom", "data": result}, indent=2)
 
         elif endpoint == "chat":
             if not chat_text:
-                return "❌ Text required"
-            result = vision_infer(Image.new("RGB", (1, 1)), chat_text)
-            return result
+                return "❌ Chat text required"
+
+            result = chat_infer(chat_text)
+            return json.dumps({"response": result}, indent=2)
 
         else:
             return "❌ Invalid endpoint"
@@ -105,25 +131,26 @@ def run(endpoint, image, custom_prompt, chat_text):
 # GRADIO UI
 # =========================
 
-with gr.Blocks(title="Multimodal Document AI (Qwen2-VL)") as demo:
-    gr.Markdown("## 📄 Multimodal Document AI (Image Supported)")
+with gr.Blocks(title="🧠 Multimodal Document AI (Qwen2-VL)") as demo:
+    gr.Markdown("## 📄 Multimodal Document AI (Real Vision)")
 
     endpoint = gr.Dropdown(
         ["bill", "invoice", "insurance", "custom", "chat"],
         label="Select Mode"
     )
 
-    image = gr.Image(type="pil", label="Upload Image")
-    custom_prompt = gr.Textbox(label="Custom Prompt")
-    chat_text = gr.Textbox(label="Chat Text")
+    image = gr.Image(type="pil", label="Upload Document Image")
+    custom_prompt = gr.Textbox(label="Custom Prompt (for custom mode)")
+    chat_text = gr.Textbox(label="Chat Text (for chat mode)")
+    output = gr.Textbox(lines=18, label="Response (JSON)")
 
-    output = gr.Textbox(label="Response", lines=20)
-    btn = gr.Button("Run 🚀")
+    run_btn = gr.Button("Run Inference 🚀")
 
-    btn.click(
-        run,
+    run_btn.click(
+        run_api,
         inputs=[endpoint, image, custom_prompt, chat_text],
         outputs=output
     )
 
-demo.launch(server_name="0.0.0.0", server_port=7860)
+if __name__ == "__main__":
+    demo.launch()
