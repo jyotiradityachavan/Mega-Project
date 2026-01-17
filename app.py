@@ -4,24 +4,23 @@ from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
 from PIL import Image
 import json
 
-# 🔴 CRITICAL FIX: Disable Gradio broken API schema generation (HF Spaces bug)
-
-
-
+# =========================
+# MODEL CONFIG
+# =========================
 
 MODEL_ID = "Qwen/Qwen2-VL-2B-Instruct"
 
 print("Loading processor...")
 processor = AutoProcessor.from_pretrained(MODEL_ID)
 
-print("Loading model (CPU)...")
+print("Loading model (CPU safe)...")
 model = Qwen2VLForConditionalGeneration.from_pretrained(
     MODEL_ID,
-    torch_dtype=torch.float32
+    torch_dtype=torch.float32,   # CPU only on HF basic
+    device_map=None
 )
 model.eval()
 print("Model loaded successfully")
-
 
 # =========================
 # PROMPTS
@@ -49,7 +48,7 @@ Return ONLY valid JSON.
 # CORE INFERENCE
 # =========================
 
-def vision_infer(image: Image.Image, prompt: str):
+def vision_infer(image: Image.Image, prompt: str) -> str:
     messages = [
         {
             "role": "user",
@@ -65,18 +64,19 @@ def vision_infer(image: Image.Image, prompt: str):
         tokenize=True,
         add_generation_prompt=True,
         return_tensors="pt"
-    ).to(model.device)
-
-    outputs = model.generate(
-        inputs,
-        max_new_tokens=1024,
-        temperature=0.0
     )
 
-    result = processor.decode(outputs[0], skip_special_tokens=True)
-    return result.strip()
+    with torch.no_grad():
+        outputs = model.generate(
+            inputs,
+            max_new_tokens=1024,
+            temperature=0.0
+        )
 
-def chat_infer(text: str):
+    return processor.decode(outputs[0], skip_special_tokens=True).strip()
+
+
+def chat_infer(text: str) -> str:
     messages = [{"role": "user", "content": text}]
 
     inputs = processor.apply_chat_template(
@@ -84,18 +84,19 @@ def chat_infer(text: str):
         tokenize=True,
         add_generation_prompt=True,
         return_tensors="pt"
-    ).to(model.device)
-
-    outputs = model.generate(
-        inputs,
-        max_new_tokens=512,
-        temperature=0.2
     )
 
-    return processor.decode(outputs[0], skip_special_tokens=True)
+    with torch.no_grad():
+        outputs = model.generate(
+            inputs,
+            max_new_tokens=512,
+            temperature=0.2
+        )
+
+    return processor.decode(outputs[0], skip_special_tokens=True).strip()
 
 # =========================
-# API ROUTER (YOUR MODES)
+# ROUTER
 # =========================
 
 def run_api(endpoint, image, custom_prompt, chat_text):
@@ -112,8 +113,9 @@ def run_api(endpoint, image, custom_prompt, chat_text):
 
             result = vision_infer(image, prompt_map[endpoint])
             return json.dumps(
-                {"document_type": endpoint, "extracted_data": result},
-                indent=2
+                {"document": endpoint, "data": result},
+                indent=2,
+                ensure_ascii=False
             )
 
         elif endpoint == "custom":
@@ -122,8 +124,9 @@ def run_api(endpoint, image, custom_prompt, chat_text):
 
             result = vision_infer(image, custom_prompt)
             return json.dumps(
-                {"document_type": "custom", "extracted_data": result},
-                indent=2
+                {"type": "custom", "data": result},
+                indent=2,
+                ensure_ascii=False
             )
 
         elif endpoint == "chat":
@@ -131,20 +134,28 @@ def run_api(endpoint, image, custom_prompt, chat_text):
                 return "❌ Chat text required"
 
             result = chat_infer(chat_text)
-            return json.dumps({"response": result}, indent=2)
+            return json.dumps(
+                {"response": result},
+                indent=2,
+                ensure_ascii=False
+            )
 
         else:
-            return "❌ Invalid endpoint"
+            return "❌ Invalid mode selected"
 
     except Exception as e:
         return f"❌ Error: {str(e)}"
 
 # =========================
-# GRADIO UI
+# GRADIO UI (SAFE MODE)
 # =========================
 
-with gr.Blocks(title="🧠 Multimodal Document AI (Qwen2-VL)") as demo:
-    gr.Markdown("## 📄 Multimodal Document AI – Qwen2-VL (Real Vision)")
+with gr.Blocks(
+    title="🧠 Multimodal Document AI (Qwen2-VL)",
+    analytics_enabled=False
+) as demo:
+
+    gr.Markdown("## 📄 Multimodal Document AI (Qwen2-VL Vision)")
 
     endpoint = gr.Dropdown(
         ["bill", "invoice", "insurance", "custom", "chat"],
@@ -152,17 +163,19 @@ with gr.Blocks(title="🧠 Multimodal Document AI (Qwen2-VL)") as demo:
     )
 
     image = gr.Image(type="pil", label="Upload Document Image")
-    custom_prompt = gr.Textbox(label="Custom Prompt (Custom mode)")
-    chat_text = gr.Textbox(label="Chat Text (Chat mode)")
+    custom_prompt = gr.Textbox(label="Custom Prompt (custom mode)")
+    chat_text = gr.Textbox(label="Chat Text (chat mode)")
     output = gr.Textbox(lines=18, label="Response (JSON)")
 
     run_btn = gr.Button("Run Inference 🚀")
 
+    # 🔴 CRITICAL FIX: Disable Gradio API schema
     run_btn.click(
-        run_api,
+        fn=run_api,
         inputs=[endpoint, image, custom_prompt, chat_text],
-        outputs=output
+        outputs=output,
+        api_name=False
     )
 
-# 🔴 REQUIRED FOR HF SPACES (NO localhost issues)
-demo.launch(share=True)
+if __name__ == "__main__":
+    demo.launch(server_name="0.0.0.0", server_port=7860)
