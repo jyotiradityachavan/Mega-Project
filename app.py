@@ -6,7 +6,7 @@ import json
 
 # 🔴 CRITICAL FIX: Disable Gradio broken API schema generation (HF Spaces bug)
 
-gr.routes.App.get_blocks = lambda self: None
+
 
 
 MODEL_ID = "Qwen/Qwen2-VL-2B-Instruct"
