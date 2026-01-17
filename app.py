@@ -186,13 +186,13 @@
 import torch
 import gradio as gr
 from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
+from qwen_vl_utils import process_vision_info  # Critical import for vision processing
 from PIL import Image
 import json
 
 # =========================
 # MODEL CONFIG
 # =========================
-
 MODEL_ID = "Qwen/Qwen2-VL-2B-Instruct"
 
 print("Loading processor...")
@@ -201,8 +201,10 @@ processor = AutoProcessor.from_pretrained(MODEL_ID)
 print("Loading model (CPU safe)...")
 model = Qwen2VLForConditionalGeneration.from_pretrained(
     MODEL_ID,
-    torch_dtype=torch.float32,
-    device_map=None
+    torch_dtype=torch.float16,           # Use float16 to reduce memory (recommended)
+    device_map="cpu",                    # Explicit CPU
+    low_cpu_mem_usage=True,
+    trust_remote_code=True
 )
 model.eval()
 print("Model loaded successfully")
@@ -210,7 +212,6 @@ print("Model loaded successfully")
 # =========================
 # PROMPTS
 # =========================
-
 BILL_PROMPT = "Extract ALL key-value pairs from this BILL. Return ONLY valid JSON."
 INVOICE_PROMPT = "Extract ALL key-value pairs from this INVOICE. Return ONLY valid JSON."
 INSURANCE_PROMPT = "Extract ALL key-value pairs from this INSURANCE document. Return ONLY valid JSON."
@@ -218,17 +219,35 @@ INSURANCE_PROMPT = "Extract ALL key-value pairs from this INSURANCE document. Re
 # =========================
 # CORE INFERENCE (VISION)
 # =========================
-
 def vision_infer(image: Image.Image, prompt: str) -> str:
-    # 🔴 CRITICAL: <image> token is REQUIRED
-    full_prompt = f"<image>\n{prompt}"
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image", "image": image},  # PIL Image directly
+                {"type": "text", "text": prompt}
+            ]
+        }
+    ]
 
+    # Apply chat template (adds generation prompt)
+    text = processor.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True
+    )
+
+    # Process vision info (critical step!)
+    image_inputs, video_inputs = process_vision_info(messages)
+
+    # Full processing
     inputs = processor(
-        images=[image],
-        text=[full_prompt],
+        text=[text],
+        images=image_inputs,
+        videos=video_inputs,
+        padding=True,
         return_tensors="pt"
     )
 
+    # Move to model device
     inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
     with torch.no_grad():
@@ -238,22 +257,21 @@ def vision_infer(image: Image.Image, prompt: str) -> str:
             do_sample=False
         )
 
-    return processor.decode(
-        outputs[0],
-        skip_special_tokens=True
-    ).strip()
-
+    generated_ids_trimmed = outputs[0][inputs.input_ids.shape[1]:]  # Trim input part
+    return processor.decode(generated_ids_trimmed, skip_special_tokens=True).strip()
 
 # =========================
-# CORE INFERENCE (CHAT)
+# CORE INFERENCE (CHAT - TEXT ONLY)
 # =========================
-
 def chat_infer(text: str) -> str:
+    messages = [{"role": "user", "content": text}]
+    text_prompt = processor.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True
+    )
     inputs = processor(
-        text=text,
+        text=[text_prompt],
         return_tensors="pt"
     )
-
     inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
     with torch.no_grad():
@@ -263,55 +281,36 @@ def chat_infer(text: str) -> str:
             do_sample=False
         )
 
-    return processor.decode(
-        outputs[0],
-        skip_special_tokens=True
-    ).strip()
+    generated_ids_trimmed = outputs[0][inputs.input_ids.shape[1]:]
+    return processor.decode(generated_ids_trimmed, skip_special_tokens=True).strip()
 
 # =========================
 # ROUTER
 # =========================
-
 def run_api(endpoint, image, custom_prompt, chat_text):
     try:
         if endpoint in ["bill", "invoice", "insurance"]:
             if image is None:
                 return "❌ Image required"
-
             prompt_map = {
                 "bill": BILL_PROMPT,
                 "invoice": INVOICE_PROMPT,
                 "insurance": INSURANCE_PROMPT
             }
-
             result = vision_infer(image, prompt_map[endpoint])
-            return json.dumps(
-                {"document": endpoint, "data": result},
-                indent=2,
-                ensure_ascii=False
-            )
+            return json.dumps({"document": endpoint, "data": result}, indent=2, ensure_ascii=False)
 
         elif endpoint == "custom":
             if image is None or not custom_prompt:
                 return "❌ Image + custom prompt required"
-
             result = vision_infer(image, custom_prompt)
-            return json.dumps(
-                {"type": "custom", "data": result},
-                indent=2,
-                ensure_ascii=False
-            )
+            return json.dumps({"type": "custom", "data": result}, indent=2, ensure_ascii=False)
 
         elif endpoint == "chat":
             if not chat_text:
                 return "❌ Chat text required"
-
             result = chat_infer(chat_text)
-            return json.dumps(
-                {"response": result},
-                indent=2,
-                ensure_ascii=False
-            )
+            return json.dumps({"response": result}, indent=2, ensure_ascii=False)
 
         else:
             return "❌ Invalid mode selected"
@@ -322,25 +321,20 @@ def run_api(endpoint, image, custom_prompt, chat_text):
 # =========================
 # GRADIO UI
 # =========================
-
 with gr.Blocks(
     title="🧠 Multimodal Document AI (Qwen2-VL)",
     analytics_enabled=False
 ) as demo:
-
     gr.Markdown("## 📄 Multimodal Document AI (Qwen2-VL Vision)")
-
     endpoint = gr.Dropdown(
         ["bill", "invoice", "insurance", "custom", "chat"],
         label="Select Mode",
         value="bill"
     )
-
     image = gr.Image(type="pil", label="Upload Document Image")
     custom_prompt = gr.Textbox(label="Custom Prompt (custom mode)")
     chat_text = gr.Textbox(label="Chat Text (chat mode)")
     output = gr.Textbox(lines=18, label="Response (JSON)")
-
     run_btn = gr.Button("Run Inference 🚀")
 
     run_btn.click(
