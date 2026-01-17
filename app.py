@@ -220,9 +220,12 @@ INSURANCE_PROMPT = "Extract ALL key-value pairs from this INSURANCE document. Re
 # =========================
 
 def vision_infer(image: Image.Image, prompt: str) -> str:
+    # 🔴 CRITICAL: <image> token is REQUIRED
+    full_prompt = f"<image>\n{prompt}"
+
     inputs = processor(
-        images=image,
-        text=prompt,
+        images=[image],
+        text=[full_prompt],
         return_tensors="pt"
     )
 
@@ -239,6 +242,7 @@ def vision_infer(image: Image.Image, prompt: str) -> str:
         outputs[0],
         skip_special_tokens=True
     ).strip()
+
 
 # =========================
 # CORE INFERENCE (CHAT)
