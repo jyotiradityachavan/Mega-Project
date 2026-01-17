@@ -196,13 +196,13 @@ import json
 MODEL_ID = "Qwen/Qwen2-VL-2B-Instruct"
 
 print("Loading processor...")
-processor = AutoProcessor.from_pretrained(MODEL_ID)
+processor = AutoProcessor.from_pretrained(MODEL_ID, trust_remote_code=True)
 
 print("Loading model (CPU safe)...")
 model = Qwen2VLForConditionalGeneration.from_pretrained(
     MODEL_ID,
-    torch_dtype=torch.float16,           # Use float16 to reduce memory (recommended)
-    device_map="cpu",                    # Explicit CPU
+    torch_dtype=torch.float32,           # Critical: float32 on CPU
+    device_map="cpu",
     low_cpu_mem_usage=True,
     trust_remote_code=True
 )
