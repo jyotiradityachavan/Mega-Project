@@ -14,14 +14,14 @@ MODEL_ID = "Qwen/Qwen2-VL-2B-Instruct"
 print("Loading processor...")
 processor = AutoProcessor.from_pretrained(MODEL_ID)
 
-print("Loading model...")
+print("Loading model (CPU)...")
 model = Qwen2VLForConditionalGeneration.from_pretrained(
     MODEL_ID,
-    torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-    device_map="auto"
+    torch_dtype=torch.float32
 )
+model.eval()
+print("Model loaded successfully")
 
-print("✅ Model loaded successfully")
 
 # =========================
 # PROMPTS
