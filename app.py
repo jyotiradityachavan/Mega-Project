@@ -67,11 +67,12 @@ def vision_infer(image: Image.Image, prompt: str) -> str:
     )
 
     with torch.no_grad():
-    outputs = model.generate(
-        inputs,
-        max_new_tokens=1024,
-        do_sample=False
-    )
+        outputs = model.generate(
+            inputs,
+            max_new_tokens=1024,
+            do_sample=False
+        )
+
 
 
     return processor.decode(outputs[0], skip_special_tokens=True).strip()
@@ -88,11 +89,11 @@ def chat_infer(text: str) -> str:
     )
 
     with torch.no_grad():
-    outputs = model.generate(
-        inputs,
-        max_new_tokens=512,
-        do_sample=False
-    )
+        outputs = model.generate(
+            inputs,
+            max_new_tokens=512,
+            do_sample=False
+        )
 
 
     return processor.decode(outputs[0], skip_special_tokens=True).strip()
