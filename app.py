@@ -186,7 +186,7 @@
 import torch
 import gradio as gr
 from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
-from qwen_vl_utils import process_vision_info  # Required for vision handling
+from qwen_vl_utils import process_vision_info  # Critical import for vision processing
 from PIL import Image
 import json
 
@@ -201,7 +201,7 @@ processor = AutoProcessor.from_pretrained(MODEL_ID, trust_remote_code=True)
 print("Loading model (CPU safe)...")
 model = Qwen2VLForConditionalGeneration.from_pretrained(
     MODEL_ID,
-    torch_dtype=torch.float32,           # float32 on CPU to avoid Half errors
+    torch_dtype=torch.float32,           # Critical: float32 on CPU
     device_map="cpu",
     low_cpu_mem_usage=True,
     trust_remote_code=True
@@ -217,81 +217,75 @@ INVOICE_PROMPT = "Extract ALL key-value pairs from this INVOICE. Return ONLY val
 INSURANCE_PROMPT = "Extract ALL key-value pairs from this INSURANCE document. Return ONLY valid JSON."
 
 # =========================
-# VISION INFERENCE
+# CORE INFERENCE (VISION)
 # =========================
 def vision_infer(image: Image.Image, prompt: str) -> str:
-    # Correct messages format for Qwen2-VL
     messages = [
         {
             "role": "user",
             "content": [
-                {"type": "image", "image": image},
+                {"type": "image", "image": image},  # PIL Image directly
                 {"type": "text", "text": prompt}
             ]
         }
     ]
 
-    # Apply chat template (adds <im_start> etc.)
+    # Apply chat template (adds generation prompt)
     text = processor.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=True
     )
 
-    # Process vision (adds pixel_values correctly)
-    image_inputs, _ = process_vision_info(messages)
+    # Process vision info (critical step!)
+    image_inputs, video_inputs = process_vision_info(messages)
 
-    # Full input processing
+    # Full processing
     inputs = processor(
         text=[text],
         images=image_inputs,
+        videos=video_inputs,
         padding=True,
         return_tensors="pt"
     )
 
-    # Move to device
+    # Move to model device
     inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
     with torch.no_grad():
-        generated_ids = model.generate(
+        outputs = model.generate(
             **inputs,
             max_new_tokens=1024,
-            do_sample=False,
-            eos_token_id=processor.tokenizer.eos_token_id
+            do_sample=False
         )
 
-    # Trim input tokens from output
-    generated_ids_trimmed = [
-        out_ids[len(in_ids):] for out_ids, in_ids in zip(generated_ids, inputs.input_ids)
-    ]
-
-    return processor.batch_decode(
-        generated_ids_trimmed,
-        skip_special_tokens=True,
-        clean_up_tokenization_spaces=False
-    )[0].strip()
+    generated_ids_trimmed = outputs[0][inputs.input_ids.shape[1]:]  # Trim input part
+    return processor.decode(generated_ids_trimmed, skip_special_tokens=True).strip()
 
 # =========================
-# CHAT INFERENCE (TEXT ONLY)
+# CORE INFERENCE (CHAT - TEXT ONLY)
 # =========================
 def chat_infer(text: str) -> str:
     messages = [{"role": "user", "content": text}]
     text_prompt = processor.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=True
     )
-    inputs = processor(text=[text_prompt], return_tensors="pt")
+    inputs = processor(
+        text=[text_prompt],
+        return_tensors="pt"
+    )
     inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
     with torch.no_grad():
-        generated_ids = model.generate(
+        outputs = model.generate(
             **inputs,
             max_new_tokens=512,
             do_sample=False
         )
 
-    generated_ids_trimmed = generated_ids[0][inputs.input_ids.shape[1]:]
+    generated_ids_trimmed = outputs[0][inputs.input_ids.shape[1]:]
     return processor.decode(generated_ids_trimmed, skip_special_tokens=True).strip()
 
 # =========================
-# ROUTER FUNCTION
+# ROUTER
 # =========================
 def run_api(endpoint, image, custom_prompt, chat_text):
     try:
@@ -327,23 +321,27 @@ def run_api(endpoint, image, custom_prompt, chat_text):
 # =========================
 # GRADIO UI
 # =========================
-with gr.Blocks(title="Multimodal Document AI (Qwen2-VL)") as demo:
-    gr.Markdown("## 📄 Multimodal Document AI Tester (Qwen2-VL 2B)")
+with gr.Blocks(
+    title="🧠 Multimodal Document AI (Qwen2-VL)",
+    analytics_enabled=False
+) as demo:
+    gr.Markdown("## 📄 Multimodal Document AI (Qwen2-VL Vision)")
     endpoint = gr.Dropdown(
         ["bill", "invoice", "insurance", "custom", "chat"],
         label="Select Mode",
         value="bill"
     )
     image = gr.Image(type="pil", label="Upload Document Image")
-    custom_prompt = gr.Textbox(label="Custom Prompt (for custom mode)")
-    chat_text = gr.Textbox(label="Chat Text (for chat mode)")
+    custom_prompt = gr.Textbox(label="Custom Prompt (custom mode)")
+    chat_text = gr.Textbox(label="Chat Text (chat mode)")
     output = gr.Textbox(lines=18, label="Response (JSON)")
-    btn = gr.Button("Run Inference 🚀")
+    run_btn = gr.Button("Run Inference 🚀")
 
-    btn.click(
+    run_btn.click(
         fn=run_api,
         inputs=[endpoint, image, custom_prompt, chat_text],
-        outputs=output
+        outputs=output,
+        api_name=False
     )
 
 if __name__ == "__main__":
