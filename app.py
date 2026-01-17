@@ -1,28 +1,25 @@
-# import gradio as gr
-# import torch
-# import json
-# from PIL import Image
-# from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
 import torch
 import gradio as gr
 from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
 from PIL import Image
 import json
 
-
+# 🔴 CRITICAL FIX: Disable Gradio broken API schema generation (HF Spaces bug)
+gradio.routes.App.get_blocks = lambda self: None
 
 MODEL_ID = "Qwen/Qwen2-VL-2B-Instruct"
 
-print("Loading Qwen2-VL processor...")
+print("Loading processor...")
 processor = AutoProcessor.from_pretrained(MODEL_ID)
 
-print("Loading Qwen2-VL model...")
+print("Loading model...")
 model = Qwen2VLForConditionalGeneration.from_pretrained(
     MODEL_ID,
     torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
     device_map="auto"
 )
-print("Model loaded successfully!")
+
+print("✅ Model loaded successfully")
 
 # =========================
 # PROMPTS
@@ -77,7 +74,7 @@ def vision_infer(image: Image.Image, prompt: str):
     result = processor.decode(outputs[0], skip_special_tokens=True)
     return result.strip()
 
-def chat_infer(text):
+def chat_infer(text: str):
     messages = [{"role": "user", "content": text}]
 
     inputs = processor.apply_chat_template(
@@ -96,7 +93,7 @@ def chat_infer(text):
     return processor.decode(outputs[0], skip_special_tokens=True)
 
 # =========================
-# API ROUTER
+# API ROUTER (YOUR MODES)
 # =========================
 
 def run_api(endpoint, image, custom_prompt, chat_text):
@@ -105,21 +102,27 @@ def run_api(endpoint, image, custom_prompt, chat_text):
             if image is None:
                 return "❌ Image required"
 
-            prompt = {
+            prompt_map = {
                 "bill": BILL_PROMPT,
                 "invoice": INVOICE_PROMPT,
                 "insurance": INSURANCE_PROMPT
-            }[endpoint]
+            }
 
-            result = vision_infer(image, prompt)
-            return json.dumps({"document": endpoint, "data": result}, indent=2)
+            result = vision_infer(image, prompt_map[endpoint])
+            return json.dumps(
+                {"document_type": endpoint, "extracted_data": result},
+                indent=2
+            )
 
         elif endpoint == "custom":
             if image is None or not custom_prompt:
                 return "❌ Image + custom prompt required"
 
             result = vision_infer(image, custom_prompt)
-            return json.dumps({"type": "custom", "data": result}, indent=2)
+            return json.dumps(
+                {"document_type": "custom", "extracted_data": result},
+                indent=2
+            )
 
         elif endpoint == "chat":
             if not chat_text:
@@ -139,7 +142,7 @@ def run_api(endpoint, image, custom_prompt, chat_text):
 # =========================
 
 with gr.Blocks(title="🧠 Multimodal Document AI (Qwen2-VL)") as demo:
-    gr.Markdown("## 📄 Multimodal Document AI (Real Vision)")
+    gr.Markdown("## 📄 Multimodal Document AI – Qwen2-VL (Real Vision)")
 
     endpoint = gr.Dropdown(
         ["bill", "invoice", "insurance", "custom", "chat"],
@@ -147,8 +150,8 @@ with gr.Blocks(title="🧠 Multimodal Document AI (Qwen2-VL)") as demo:
     )
 
     image = gr.Image(type="pil", label="Upload Document Image")
-    custom_prompt = gr.Textbox(label="Custom Prompt (for custom mode)")
-    chat_text = gr.Textbox(label="Chat Text (for chat mode)")
+    custom_prompt = gr.Textbox(label="Custom Prompt (Custom mode)")
+    chat_text = gr.Textbox(label="Chat Text (Chat mode)")
     output = gr.Textbox(lines=18, label="Response (JSON)")
 
     run_btn = gr.Button("Run Inference 🚀")
@@ -159,6 +162,5 @@ with gr.Blocks(title="🧠 Multimodal Document AI (Qwen2-VL)") as demo:
         outputs=output
     )
 
-if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7860)
-
+# 🔴 REQUIRED FOR HF SPACES (NO localhost issues)
+demo.launch(share=True)
