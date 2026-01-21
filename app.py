@@ -348,4 +348,3 @@ if __name__ == "__main__":
     demo.launch(server_name="0.0.0.0", server_port=7860)
 
 
-i am using qwen model so is this code correct
