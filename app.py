@@ -189,6 +189,7 @@ from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
 from qwen_vl_utils import process_vision_info  # Critical import for vision processing
 from PIL import Image
 import json
+import re  # For cleaning up the model's output
 
 # =========================
 # MODEL CONFIG
@@ -202,7 +203,7 @@ print("Loading model (CPU safe)...")
 model = Qwen2VLForConditionalGeneration.from_pretrained(
     MODEL_ID,
     torch_dtype=torch.float32,           # Use float32 for CPU compatibility
-    device_map="cpu",                    # Explicit CPU
+    device_map="cpu",                    # Explicit CPU; change to "auto" or "cuda" if GPU available in your HF Space
     low_cpu_mem_usage=True,
     trust_remote_code=True
 )
@@ -210,14 +211,14 @@ model.eval()
 print("Model loaded successfully")
 
 # =========================
-# PROMPTS
+# PROMPTS (Stricter to avoid markdown wrappers)
 # =========================
-BILL_PROMPT = "Extract ALL key-value pairs from this BILL. Return ONLY valid JSON."
-INVOICE_PROMPT = "Extract ALL key-value pairs from this INVOICE. Return ONLY valid JSON."
-INSURANCE_PROMPT = "Extract ALL key-value pairs from this INSURANCE document. Return ONLY valid JSON."
+BILL_PROMPT = "Extract ALL key-value pairs from this BILL. Output ONLY the raw JSON object with no additional text, code blocks, or explanations."
+INVOICE_PROMPT = "Extract ALL key-value pairs from this INVOICE. Output ONLY the raw JSON object with no additional text, code blocks, or explanations."
+INSURANCE_PROMPT = "Extract ALL key-value pairs from this INSURANCE document. Output ONLY the raw JSON object with no additional text, code blocks, or explanations."
 
 # =========================
-# CORE INFERENCE (VISION)
+# CORE INFERENCE (VISION) - Reduced max_new_tokens for speed
 # =========================
 def vision_infer(image: Image.Image, prompt: str) -> str:
     messages = [
@@ -253,15 +254,19 @@ def vision_infer(image: Image.Image, prompt: str) -> str:
     with torch.no_grad():
         outputs = model.generate(
             **inputs,
-            max_new_tokens=1024,
+            max_new_tokens=512,  # Reduced from 1024 for faster inference
             do_sample=False
         )
 
     generated_ids_trimmed = outputs[0][inputs['input_ids'].shape[1]:]  # Trim input part
-    return processor.decode(generated_ids_trimmed, skip_special_tokens=True).strip()
+    raw_output = processor.decode(generated_ids_trimmed, skip_special_tokens=True).strip()
+
+    # Clean up any unwanted wrappers (e.g., ```json ... ```)
+    cleaned_output = re.sub(r'```json\s*|\s*```', '', raw_output).strip()
+    return cleaned_output
 
 # =========================
-# CORE INFERENCE (CHAT - TEXT ONLY)
+# CORE INFERENCE (CHAT - TEXT ONLY) - Reduced max_new_tokens for speed
 # =========================
 def chat_infer(text: str) -> str:
     messages = [{"role": "user", "content": text}]
@@ -277,7 +282,7 @@ def chat_infer(text: str) -> str:
     with torch.no_grad():
         outputs = model.generate(
             **inputs,
-            max_new_tokens=512,
+            max_new_tokens=256,  # Reduced from 512 for faster inference
             do_sample=False
         )
 
@@ -298,7 +303,12 @@ def run_api(endpoint, image, custom_prompt, chat_text):
                 "insurance": INSURANCE_PROMPT
             }
             result = vision_infer(image, prompt_map[endpoint])
-            return json.dumps({"document": endpoint, "data": result}, indent=2, ensure_ascii=False)
+            # Parse and validate as JSON
+            try:
+                json_data = json.loads(result)
+                return json.dumps({"document": endpoint, "data": json_data}, indent=2, ensure_ascii=False)
+            except json.JSONDecodeError:
+                return json.dumps({"document": endpoint, "data": result}, indent=2, ensure_ascii=False)  # Fallback to string if not valid JSON
 
         elif endpoint == "custom":
             if image is None or not custom_prompt:
