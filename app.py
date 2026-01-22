@@ -186,10 +186,16 @@
 import torch
 import gradio as gr
 from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
-from qwen_vl_utils import process_vision_info  # Critical import for vision processing
+from qwen_vl_utils import process_vision_info
 from PIL import Image
 import json
-import re  # For cleaning up the model's output
+import re
+from fastapi import FastAPI, UploadFile, File, Form, Request, JSONResponse
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+import uvicorn
+import base64
+from io import BytesIO
 
 # =========================
 # MODEL CONFIG
@@ -197,13 +203,17 @@ import re  # For cleaning up the model's output
 MODEL_ID = "Qwen/Qwen2-VL-2B-Instruct"
 
 print("Loading processor...")
-processor = AutoProcessor.from_pretrained(MODEL_ID)
+processor = AutoProcessor.from_pretrained(
+    MODEL_ID,
+    min_pixels=256 * 28 * 28,          # Keep min reasonable
+    max_pixels=448 * 28 * 28           # Lower max (~350k pixels) for faster vision processing
+)
 
-print("Loading model (CPU safe)...")
+print("Loading model...")
 model = Qwen2VLForConditionalGeneration.from_pretrained(
     MODEL_ID,
-    torch_dtype=torch.float32,           # Use float32 for CPU compatibility
-    device_map="cpu",                    # Explicit CPU; change to "auto" or "cuda" if GPU available in your HF Space
+    torch_dtype="auto",                # Auto-select best (bf16/f32)
+    device_map="auto",                 # Use GPU if available!
     low_cpu_mem_usage=True,
     trust_remote_code=True
 )
@@ -211,35 +221,46 @@ model.eval()
 print("Model loaded successfully")
 
 # =========================
-# PROMPTS (Stricter to avoid markdown wrappers)
+# PROMPTS
 # =========================
 BILL_PROMPT = "Extract ALL key-value pairs from this BILL. Output ONLY the raw JSON object with no additional text, code blocks, or explanations."
 INVOICE_PROMPT = "Extract ALL key-value pairs from this INVOICE. Output ONLY the raw JSON object with no additional text, code blocks, or explanations."
 INSURANCE_PROMPT = "Extract ALL key-value pairs from this INSURANCE document. Output ONLY the raw JSON object with no additional text, code blocks, or explanations."
 
 # =========================
-# CORE INFERENCE (VISION) - Reduced max_new_tokens for speed
+# HELPER
 # =========================
-def vision_infer(image: Image.Image, prompt: str) -> str:
+def image_to_base64(image_bytes: bytes) -> str:
+    return base64.b64encode(image_bytes).decode('utf-8')
+
+# =========================
+# CORE INFERENCE (VISION)
+# =========================
+def vision_inference(base64_image: str, prompt: str) -> str:
+    # Decode base64 to bytes
+    image_bytes = base64.b64decode(base64_image)
+    image = Image.open(BytesIO(image_bytes))
+
+    # Resize image for speed (preserve aspect ratio)
+    max_size = 512
+    if image.width > max_size or image.height > max_size:
+        ratio = max_size / max(image.width, image.height)
+        new_size = (int(image.width * ratio), int(image.height * ratio))
+        image = image.resize(new_size, Image.LANCZOS)
+
     messages = [
         {
             "role": "user",
             "content": [
-                {"type": "image", "image": image},  # PIL Image directly
+                {"type": "image", "image": image},
                 {"type": "text", "text": prompt}
             ]
         }
     ]
 
-    # Apply chat template (adds generation prompt)
-    text = processor.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True
-    )
-
-    # Process vision info (critical step!)
+    text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     image_inputs, video_inputs = process_vision_info(messages)
 
-    # Full processing
     inputs = processor(
         text=[text],
         images=image_inputs,
@@ -248,41 +269,40 @@ def vision_infer(image: Image.Image, prompt: str) -> str:
         return_tensors="pt"
     )
 
-    # Move to model device
     inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
     with torch.no_grad():
         outputs = model.generate(
             **inputs,
-            max_new_tokens=512,  # Reduced from 1024 for faster inference
+            max_new_tokens=256,  # Reduced for speed
             do_sample=False
         )
 
-    generated_ids_trimmed = outputs[0][inputs['input_ids'].shape[1]:]  # Trim input part
+    generated_ids_trimmed = outputs[0][inputs['input_ids'].shape[1]:]
     raw_output = processor.decode(generated_ids_trimmed, skip_special_tokens=True).strip()
 
-    # Clean up any unwanted wrappers (e.g., ```json ... ```)
+    # Clean up
     cleaned_output = re.sub(r'```json\s*|\s*```', '', raw_output).strip()
-    return cleaned_output
+
+    # Try to parse as JSON and return dict if possible, else str
+    try:
+        return json.loads(cleaned_output)
+    except json.JSONDecodeError:
+        return cleaned_output
 
 # =========================
-# CORE INFERENCE (CHAT - TEXT ONLY) - Reduced max_new_tokens for speed
+# CORE INFERENCE (CHAT)
 # =========================
-def chat_infer(text: str) -> str:
+def chat_inference(text: str) -> str:
     messages = [{"role": "user", "content": text}]
-    text_prompt = processor.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True
-    )
-    inputs = processor(
-        text=[text_prompt],
-        return_tensors="pt"
-    )
+    text_prompt = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    inputs = processor(text=[text_prompt], return_tensors="pt")
     inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
     with torch.no_grad():
         outputs = model.generate(
             **inputs,
-            max_new_tokens=256,  # Reduced from 512 for faster inference
+            max_new_tokens=256,
             do_sample=False
         )
 
@@ -290,69 +310,126 @@ def chat_infer(text: str) -> str:
     return processor.decode(generated_ids_trimmed, skip_special_tokens=True).strip()
 
 # =========================
-# ROUTER
+# GRADIO UI (Kept as is)
 # =========================
-def run_api(endpoint, image, custom_prompt, chat_text):
-    try:
-        if endpoint in ["bill", "invoice", "insurance"]:
-            if image is None:
-                return "❌ Image required"
-            prompt_map = {
-                "bill": BILL_PROMPT,
-                "invoice": INVOICE_PROMPT,
-                "insurance": INSURANCE_PROMPT
-            }
-            result = vision_infer(image, prompt_map[endpoint])
-            # Parse and validate as JSON
-            try:
-                json_data = json.loads(result)
-                return json.dumps({"document": endpoint, "data": json_data}, indent=2, ensure_ascii=False)
-            except json.JSONDecodeError:
-                return json.dumps({"document": endpoint, "data": result}, indent=2, ensure_ascii=False)  # Fallback to string if not valid JSON
-
-        elif endpoint == "custom":
-            if image is None or not custom_prompt:
-                return "❌ Image + custom prompt required"
-            result = vision_infer(image, custom_prompt)
-            return json.dumps({"type": "custom", "data": result}, indent=2, ensure_ascii=False)
-
-        elif endpoint == "chat":
-            if not chat_text:
-                return "❌ Chat text required"
-            result = chat_infer(chat_text)
-            return json.dumps({"response": result}, indent=2, ensure_ascii=False)
-
-        else:
-            return "❌ Invalid mode selected"
-
-    except Exception as e:
-        return f"❌ Error: {str(e)}"
-
-# =========================
-# GRADIO UI
-# =========================
-with gr.Blocks(
-    title="🧠 Multimodal Document AI (Qwen2-VL)",
-    analytics_enabled=False
-) as demo:
+with gr.Blocks(title="🧠 Multimodal Document AI (Qwen2-VL)") as demo:
     gr.Markdown("## 📄 Multimodal Document AI (Qwen2-VL Vision)")
-    endpoint = gr.Dropdown(
-        ["bill", "invoice", "insurance", "custom", "chat"],
-        label="Select Mode",
-        value="bill"
-    )
+    endpoint = gr.Dropdown(["bill", "invoice", "insurance", "custom", "chat"], label="Select Mode", value="bill")
     image = gr.Image(type="pil", label="Upload Document Image")
     custom_prompt = gr.Textbox(label="Custom Prompt (custom mode)")
     chat_text = gr.Textbox(label="Chat Text (chat mode)")
     output = gr.Textbox(lines=18, label="Response (JSON)")
     run_btn = gr.Button("Run Inference 🚀")
 
-    run_btn.click(
-        fn=run_api,
-        inputs=[endpoint, image, custom_prompt, chat_text],
-        outputs=output,
-        api_name=False
-    )
+    def run_api(endpoint, image, custom_prompt, chat_text):
+        try:
+            if endpoint in ["bill", "invoice", "insurance"]:
+                if image is None:
+                    return "❌ Image required"
+                prompt_map = {
+                    "bill": BILL_PROMPT,
+                    "invoice": INVOICE_PROMPT,
+                    "insurance": INSURANCE_PROMPT
+                }
+                base64_image = image_to_base64(image.tobytes())  # Adjust for Gradio PIL
+                result = vision_inference(base64_image, prompt_map[endpoint])
+                return json.dumps({"document": endpoint, "data": result}, indent=2, ensure_ascii=False)
 
+            elif endpoint == "custom":
+                if image is None or not custom_prompt:
+                    return "❌ Image + custom prompt required"
+                base64_image = image_to_base64(image.tobytes())
+                result = vision_inference(base64_image, custom_prompt)
+                return json.dumps({"type": "custom", "data": result}, indent=2, ensure_ascii=False)
+
+            elif endpoint == "chat":
+                if not chat_text:
+                    return "❌ Chat text required"
+                result = chat_inference(chat_text)
+                return json.dumps({"response": result}, indent=2, ensure_ascii=False)
+
+            else:
+                return "❌ Invalid mode selected"
+
+        except Exception as e:
+            return f"❌ Error: {str(e)}"
+
+    run_btn.click(fn=run_api, inputs=[endpoint, image, custom_prompt, chat_text], outputs=output)
+
+# =========================
+# FASTAPI APP
+# =========================
+app = FastAPI()
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+
+# =========================
+# APIs
+# =========================
+
+@app.get("/health")
+def health():
+    return {"message": "Server running !"}
+
+
+# ---------- BILL ----------
+@app.post("/bill")
+async def bill(image: UploadFile = File(...)):
+    image_bytes = await image.read()
+    base64_image = image_to_base64(image_bytes)
+    result = vision_inference(base64_image, BILL_PROMPT)
+    return JSONResponse(content={"document": "bill", "data": result})
+
+
+# ---------- INVOICE ----------
+@app.post("/invoice")
+async def invoice(image: UploadFile = File(...)):
+    image_bytes = await image.read()
+    base64_image = image_to_base64(image_bytes)
+    result = vision_inference(base64_image, INVOICE_PROMPT)
+    return JSONResponse(content={"document": "invoice", "data": result})
+
+
+# ---------- INSURANCE ----------
+@app.post("/insurance")
+async def insurance(image: UploadFile = File(...)):
+    image_bytes = await image.read()
+    base64_image = image_to_base64(image_bytes)
+    result = vision_inference(base64_image, INSURANCE_PROMPT)
+    return JSONResponse(content={"document": "insurance", "data": result})
+
+
+# ---------- CUSTOM (IMAGE + PROMPT FROM FRONTEND)
+# RATE LIMIT: 4 requests / minute
+@app.post("/custom")
+@limiter.limit("4/minute")
+async def custom(
+    request: Request,
+    image: UploadFile = File(...),
+    prompt: str = Form(...)
+):
+    image_bytes = await image.read()
+    base64_image = image_to_base64(image_bytes)
+    result = vision_inference(base64_image, prompt)
+    return JSONResponse(content={"type": "custom", "data": result})
+
+
+# ---------- CHAT (TEXT ONLY)
+# RATE LIMIT: 6 requests / minute
+@app.post("/chat")
+@limiter.limit("6/minute")
+async def chat(
+    request: Request,
+    question: str = Form(...)
+):
+    result = chat_inference(question)
+    return JSONResponse(content={"response": result})
+
+
+# =========================
+# RUN SERVER
+# =========================
 if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7860)
+    # Launch Gradio on 7860 (if desired, but for APIs, focus on FastAPI)
+    # demo.launch(server_name="0.0.0.0", server_port=7860)  # Comment out if not needed
+    uvicorn.run(app, host="0.0.0.0", port=8000)
