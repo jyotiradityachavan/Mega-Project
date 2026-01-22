@@ -201,8 +201,8 @@ processor = AutoProcessor.from_pretrained(MODEL_ID)
 print("Loading model (CPU safe)...")
 model = Qwen2VLForConditionalGeneration.from_pretrained(
     MODEL_ID,
-    torch_dtype=torch.float16,           # Use float16 to reduce memory (recommended)
-    device_map="cpu",                    # Explicit CPU
+    torch_dtype=torch.float32,           # Change to float32 for CPU compatibility
+    device_map="cpu",                    # Keep as "cpu" for now; change to "auto" if GPU available
     low_cpu_mem_usage=True,
     trust_remote_code=True
 )
