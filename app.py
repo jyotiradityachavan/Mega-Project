@@ -190,7 +190,8 @@ from qwen_vl_utils import process_vision_info
 from PIL import Image
 import json
 import re
-from fastapi import FastAPI, UploadFile, File, Form, Request, JSONResponse
+from fastapi import FastAPI, UploadFile, File, Form, Request
+from fastapi.responses import JSONResponse
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 import uvicorn
@@ -331,14 +332,21 @@ with gr.Blocks(title="🧠 Multimodal Document AI (Qwen2-VL)") as demo:
                     "invoice": INVOICE_PROMPT,
                     "insurance": INSURANCE_PROMPT
                 }
-                base64_image = image_to_base64(image.tobytes())  # Adjust for Gradio PIL
+                # For Gradio, image is PIL.Image, so convert to bytes
+                buffered = BytesIO()
+                image.save(buffered, format="JPEG")  # or PNG if needed
+                image_bytes = buffered.getvalue()
+                base64_image = image_to_base64(image_bytes)
                 result = vision_inference(base64_image, prompt_map[endpoint])
                 return json.dumps({"document": endpoint, "data": result}, indent=2, ensure_ascii=False)
 
             elif endpoint == "custom":
                 if image is None or not custom_prompt:
                     return "❌ Image + custom prompt required"
-                base64_image = image_to_base64(image.tobytes())
+                buffered = BytesIO()
+                image.save(buffered, format="JPEG")
+                image_bytes = buffered.getvalue()
+                base64_image = image_to_base64(image_bytes)
                 result = vision_inference(base64_image, custom_prompt)
                 return json.dumps({"type": "custom", "data": result}, indent=2, ensure_ascii=False)
 
