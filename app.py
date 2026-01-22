@@ -201,8 +201,8 @@ processor = AutoProcessor.from_pretrained(MODEL_ID)
 print("Loading model (CPU safe)...")
 model = Qwen2VLForConditionalGeneration.from_pretrained(
     MODEL_ID,
-    torch_dtype=torch.float32,           # Change to float32 for CPU compatibility
-    device_map="cpu",                    # Keep as "cpu" for now; change to "auto" if GPU available
+    torch_dtype=torch.float32,           # Use float32 for CPU compatibility
+    device_map="cpu",                    # Explicit CPU
     low_cpu_mem_usage=True,
     trust_remote_code=True
 )
@@ -257,7 +257,7 @@ def vision_infer(image: Image.Image, prompt: str) -> str:
             do_sample=False
         )
 
-    generated_ids_trimmed = outputs[0][inputs.input_ids.shape[1]:]  # Trim input part
+    generated_ids_trimmed = outputs[0][inputs['input_ids'].shape[1]:]  # Trim input part
     return processor.decode(generated_ids_trimmed, skip_special_tokens=True).strip()
 
 # =========================
@@ -281,7 +281,7 @@ def chat_infer(text: str) -> str:
             do_sample=False
         )
 
-    generated_ids_trimmed = outputs[0][inputs.input_ids.shape[1]:]
+    generated_ids_trimmed = outputs[0][inputs['input_ids'].shape[1]:]
     return processor.decode(generated_ids_trimmed, skip_special_tokens=True).strip()
 
 # =========================
@@ -346,5 +346,3 @@ with gr.Blocks(
 
 if __name__ == "__main__":
     demo.launch(server_name="0.0.0.0", server_port=7860)
-
-
