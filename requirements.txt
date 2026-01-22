@@ -5,4 +5,5 @@ accelerate>=0.33.0
 gradio==4.44.1
 numpy<2
 pillow>=10.0.0
-qwen-vl-utils>=0.0.8          # Required for proper vision processing in Qwen2-VL
+qwen-vl-utils>=0.0.8  # Required for proper vision processing in Qwen2-VL
+slowapi>=0.1.8
