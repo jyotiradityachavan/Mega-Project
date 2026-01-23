@@ -11,4 +11,4 @@ fastapi
 uvicorn
 
 # ✅ This is the most reliable pre-built wheel for HF Spaces CPU
-llama-cpp-python --extra-index-url=https://jllllll.github.io/llama-cpp-python-cuBLAS-wheels/no-cuda
+llama-cpp-python --extra-index-url https://jllllll.github.io/llama-cpp-python-cuBLAS-wheels/no-cuda
