@@ -11,4 +11,4 @@ fastapi
 uvicorn
 
 # ✅ This is the most reliable pre-built wheel for HF Spaces CPU
-https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.4/llama_cpp_python-0.3.4-cp310-cp310-manylinux_2_31_x86_64.whl
+llama-cpp-python --extra-index-url https://jllllll.github.io/llama-cpp-python-cuBLAS-wheels/cpu/AVX2
