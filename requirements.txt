@@ -10,5 +10,5 @@ slowapi>=0.1.8
 fastapi
 uvicorn
 
-# Use pre-built CPU wheel (AVX2 optimized)
-llama-cpp-python --extra-index-url https://jllllll.github.io/llama-cpp-python-cuBLAS-wheels/no-cuda/AVX2
+# ✅ This is the most reliable pre-built wheel for HF Spaces CPU
+llama-cpp-python --extra-index-url=https://jllllll.github.io/llama-cpp-python-cuBLAS-wheels/no-cuda
