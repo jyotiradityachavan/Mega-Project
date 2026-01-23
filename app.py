@@ -183,7 +183,11 @@
 # if __name__ == "__main__":
 #     demo.launch(server_name="0.0.0.0", server_port=7860)
 
+
+import torch
 import gradio as gr
+from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
+from qwen_vl_utils import process_vision_info
 from PIL import Image
 import json
 import re
@@ -194,35 +198,33 @@ from slowapi.util import get_remote_address
 import uvicorn
 import base64
 from io import BytesIO
-from llama_cpp import Llama
-from huggingface_hub import hf_hub_download
 
 # =========================
 # MODEL CONFIG
 # =========================
-REPO_ID = "bartowski/Qwen2-VL-2B-Instruct-GGUF"
-MODEL_FILE = "Qwen2-VL-2B-Instruct-Q5_K_M.gguf"  # Good balance: 1.13GB, high quality
-MMPROJ_FILE = "mmproj-Qwen2-VL-2B-Instruct-f32.gguf"
+MODEL_ID = "Qwen/Qwen2-VL-2B-Instruct"
 
-print("Downloading model...")
-model_path = hf_hub_download(REPO_ID, MODEL_FILE)
-mmproj_path = hf_hub_download(REPO_ID, MMPROJ_FILE)
+print("Loading processor...")
+processor = AutoProcessor.from_pretrained(
+    MODEL_ID,
+    min_pixels=256 * 28 * 28,          # Keep min reasonable
+    max_pixels=448 * 28 * 28           # Lower max (~350k pixels) for faster vision processing
+)
 
 print("Loading model...")
-llm = Llama(
-    model_path=model_path,
-    clip_model_path=mmproj_path,
-    verbose=False,
-    n_ctx=2048,  # Context length
-    n_threads=8,  # Adjust based on CPU cores
-    logits_all=True  # Needed for some models
+model = Qwen2VLForConditionalGeneration.from_pretrained(
+    MODEL_ID,
+    torch_dtype="auto",                # Auto-select best (bf16/f32)
+    device_map="auto",                 # Use GPU if available!
+    low_cpu_mem_usage=True,
+    trust_remote_code=True
 )
+model.eval()
 print("Model loaded successfully")
 
 # =========================
 # PROMPTS
 # =========================
-SYSTEM_PROMPT = "You are a world-class AI that extracts information accurately. Follow the user's instructions precisely."
 BILL_PROMPT = "Extract ALL key-value pairs from this BILL. Output ONLY the raw JSON object with no additional text, code blocks, or explanations."
 INVOICE_PROMPT = "Extract ALL key-value pairs from this INVOICE. Output ONLY the raw JSON object with no additional text, code blocks, or explanations."
 INSURANCE_PROMPT = "Extract ALL key-value pairs from this INSURANCE document. Output ONLY the raw JSON object with no additional text, code blocks, or explanations."
@@ -236,22 +238,50 @@ def image_to_base64(image_bytes: bytes) -> str:
 # =========================
 # CORE INFERENCE (VISION)
 # =========================
-def vision_inference(base64_image: str, user_prompt: str) -> dict | str:
+def vision_inference(base64_image: str, prompt: str) -> str:
+    # Decode base64 to bytes
+    image_bytes = base64.b64decode(base64_image)
+    image = Image.open(BytesIO(image_bytes))
+
+    # Resize image for speed (preserve aspect ratio)
+    max_size = 512
+    if image.width > max_size or image.height > max_size:
+        ratio = max_size / max(image.width, image.height)
+        new_size = (int(image.width * ratio), int(image.height * ratio))
+        image = image.resize(new_size, Image.LANCZOS)
+
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": [
-            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}},
-            {"type": "text", "text": user_prompt}
-        ]}
+        {
+            "role": "user",
+            "content": [
+                {"type": "image", "image": image},
+                {"type": "text", "text": prompt}
+            ]
+        }
     ]
 
-    output = llm.create_chat_completion(
-        messages=messages,
-        max_tokens=256,
-        temperature=0.0
+    text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    image_inputs, video_inputs = process_vision_info(messages)
+
+    inputs = processor(
+        text=[text],
+        images=image_inputs,
+        videos=video_inputs,
+        padding=True,
+        return_tensors="pt"
     )
 
-    raw_output = output['choices'][0]['message']['content'].strip()
+    inputs = {k: v.to(model.device) for k, v in inputs.items()}
+
+    with torch.no_grad():
+        outputs = model.generate(
+            **inputs,
+            max_new_tokens=256,  # Reduced for speed
+            do_sample=False
+        )
+
+    generated_ids_trimmed = outputs[0][inputs['input_ids'].shape[1]:]
+    raw_output = processor.decode(generated_ids_trimmed, skip_special_tokens=True).strip()
 
     # Clean up
     cleaned_output = re.sub(r'```json\s*|\s*```', '', raw_output).strip()
@@ -266,21 +296,23 @@ def vision_inference(base64_image: str, user_prompt: str) -> dict | str:
 # CORE INFERENCE (CHAT)
 # =========================
 def chat_inference(text: str) -> str:
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": text}
-    ]
+    messages = [{"role": "user", "content": text}]
+    text_prompt = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    inputs = processor(text=[text_prompt], return_tensors="pt")
+    inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
-    output = llm.create_chat_completion(
-        messages=messages,
-        max_tokens=256,
-        temperature=0.0
-    )
+    with torch.no_grad():
+        outputs = model.generate(
+            **inputs,
+            max_new_tokens=256,
+            do_sample=False
+        )
 
-    return output['choices'][0]['message']['content'].strip()
+    generated_ids_trimmed = outputs[0][inputs['input_ids'].shape[1]:]
+    return processor.decode(generated_ids_trimmed, skip_special_tokens=True).strip()
 
 # =========================
-# GRADIO UI
+# GRADIO UI (Kept as is)
 # =========================
 with gr.Blocks(title="🧠 Multimodal Document AI (Qwen2-VL)") as demo:
     gr.Markdown("## 📄 Multimodal Document AI (Qwen2-VL Vision)")
@@ -301,9 +333,9 @@ with gr.Blocks(title="🧠 Multimodal Document AI (Qwen2-VL)") as demo:
                     "invoice": INVOICE_PROMPT,
                     "insurance": INSURANCE_PROMPT
                 }
-                # Convert PIL to base64
+                # For Gradio, image is PIL.Image, so convert to bytes
                 buffered = BytesIO()
-                image.save(buffered, format="JPEG")
+                image.save(buffered, format="JPEG")  # or PNG if needed
                 image_bytes = buffered.getvalue()
                 base64_image = image_to_base64(image_bytes)
                 result = vision_inference(base64_image, prompt_map[endpoint])
@@ -407,5 +439,6 @@ async def chat(
 # RUN SERVER
 # =========================
 if __name__ == "__main__":
-    # demo.launch(server_name="0.0.0.0", server_port=7860)  # Uncomment if Gradio needed
+    # Launch Gradio on 7860 (if desired, but for APIs, focus on FastAPI)
+    # demo.launch(server_name="0.0.0.0", server_port=7860)  # Comment out if not needed
     uvicorn.run(app, host="0.0.0.0", port=8000)
