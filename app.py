@@ -459,6 +459,7 @@ from slowapi.util import get_remote_address
 import uvicorn
 import base64
 from io import BytesIO
+from gradio import mount_gradio_app
 
 # =========================
 # PROMPTS (defined early)
@@ -682,7 +683,7 @@ with gr.Blocks(title="🧠 Multimodal Document AI (Qwen2-VL)") as demo:
     run_btn.click(fn=run_api, inputs=[endpoint, image, custom_prompt, chat_text], outputs=output)
 
 # Mount Gradio inside FastAPI
-demo.mount_gradio_app(app, demo, path="/ui")
+app = mount_gradio_app(app, demo, path="/ui")
 
 # =========================
 # RUN SERVER
