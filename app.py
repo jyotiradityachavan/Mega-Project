@@ -475,6 +475,10 @@ app = FastAPI(title="Document AI - Qwen2-VL")
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 
+@app.get("/ready")  # HF sometimes probes /ready or /live
+async def ready():
+    return {"ready": True}
+    
 # Fast root endpoint for HF health probes
 @app.get("/")
 async def root():
